@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from sqlalchemy.orm import Session
 from .. import models
 from ..database import SessionLocal
 from ..schemas import JobResponse
@@ -42,6 +43,8 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
             status_code=404,
             detail="Job not found"
         )
-
-
     return job
+@router.get("/",response_model=list[JobResponse])
+def get_jobs(db: Session = Depends(get_db)):
+    jobs = db.query(models.Job).all()
+    return jobs
