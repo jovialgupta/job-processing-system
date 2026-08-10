@@ -50,4 +50,4 @@ def get_jobs(db: Session = Depends(get_db)):
     return jobs
 
 
-//API creates → PostgreSQL stores → Redis queues.
+#API creates → PostgreSQL stores → Redis queues.
