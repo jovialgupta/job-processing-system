@@ -9,6 +9,39 @@ function App() {
   const [file, setFile] = useState(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  const submitJobs = async () => {
+    if (selectedFiles.length === 0) {
+      alert("Please select at least one PDF.");
+      return;
+    }
+
+    if (selectedFiles.length > 10) {
+      alert("You can upload a maximum of 10 PDFs at once.");
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      for (const file of selectedFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        await fetch("http://localhost:8000/jobs/", {
+          method: "POST",
+          body: formData,
+        });
+      }
+
+      setSelectedFiles([]);
+    } catch (error) {
+      console.error("Job submission failed:", error);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -76,20 +109,21 @@ function App() {
 
     return () => clearInterval(interval);
   }, []);
+  const sortedJobs = [...jobs].sort((a, b) => b.id - a.id);
 
-  const queued = jobs.filter(
+  const queued = sortedJobs.filter(
     (job) => job.status === "QUEUED"
   );
 
-  const processing = jobs.filter(
+  const processing = sortedJobs.filter(
     (job) => job.status === "PROCESSING"
   );
 
-  const completed = jobs.filter(
+  const completed = sortedJobs.filter(
     (job) => job.status === "COMPLETED"
   );
 
-  const failed = jobs.filter(
+  const failed = sortedJobs.filter(
     (job) => job.status === "FAILED"
   );
 
@@ -177,13 +211,16 @@ function App() {
               Browse
 
               <input
-                id="fileInput"
                 type="file"
-                onChange={(e) => {
-                  setFile(e.target.files[0]);
-                  setError("");
-                }}
+                accept=".pdf"
+                multiple
+                onChange={(e) => setSelectedFiles(Array.from(e.target.files))}
+                disabled={submitting}
               />
+
+              <p>
+                {selectedFiles.length} file(s) selected
+              </p>
             </label>
 
           </div>
@@ -196,10 +233,12 @@ function App() {
 
           <button
             className="create-btn"
-            onClick={createJob}
-            disabled={!file || creating}
+            onClick={submitJobs}
+            disabled={selectedFiles.length === 0 || submitting}
           >
-            {creating ? "Submitting..." : "Create Job"}
+            {submitting
+              ? "Submitting..."
+              : `Submit ${selectedFiles.length} Job${selectedFiles.length !== 1 ? "s" : ""}`}
           </button>
 
         </section>
@@ -416,47 +455,44 @@ function App() {
                 <span>CREATED</span>
               </div>
 
-              {jobs
-                .slice()
-                .reverse()
-                .map((job) => (
+              {sortedJobs.map((job) => (
 
-                  <div
-                    className="table-row"
-                    key={job.id}
-                  >
+                <div
+                  className="table-row"
+                  key={job.id}
+                >
 
-                    <strong>
-                      #{job.id}
-                    </strong>
+                  <strong>
+                    #{job.id}
+                  </strong>
 
-                    <span className="filename">
-                      {job.filename}
+                  <span className="filename">
+                    {job.filename}
+                  </span>
+
+                  <span>
+                    <span
+                      className={`status ${job.status.toLowerCase()}`}
+                    >
+                      {job.status}
                     </span>
+                  </span>
 
-                    <span>
-                      <span
-                        className={`status ${job.status.toLowerCase()}`}
-                      >
-                        {job.status}
-                      </span>
-                    </span>
+                  <span className="result">
+                    {job.result || "—"}
+                  </span>
 
-                    <span className="result">
-                      {job.result || "—"}
-                    </span>
+                  <span className="created">
+                    {job.created_at
+                      ? new Date(
+                        job.created_at
+                      ).toLocaleString()
+                      : "—"}
+                  </span>
 
-                    <span className="created">
-                      {job.created_at
-                        ? new Date(
-                          job.created_at
-                        ).toLocaleString()
-                        : "—"}
-                    </span>
+                </div>
 
-                  </div>
-
-                ))}
+              ))}
 
             </div>
 
@@ -467,7 +503,7 @@ function App() {
       </main>
 
       <footer>
-        File Processing Dashboard
+        Async File processing Dashboard
       </footer>
 
     </div>
