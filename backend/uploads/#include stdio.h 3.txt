@@ -1,0 +1,58 @@
+#include <stdio.h>
+int main() {
+ int x=42;
+ void *ptr=&x;
+ printf("value of x is %d",*(int*)ptr);
+ return 0;
+}
+
+
+#include <stdio.h>
+#include<string.h>
+int main() {
+  
+  char c = 'x';
+ char *g = &c;
+ printf("g = %u\n", g);
+ g++;
+ printf("g++ = %u\n", g);
+ g++;
+ printf("g++ = %u\n", g);
+ g--;
+ printf("g-- = %u\n", g); 
+
+ 
+     return 0;
+}
+
+#include <stdio.h>
+int main() {
+  
+ int arr[]={1,2,3,4,5};
+ int (*p)[5]=&arr;
+    printf("1st element is %d \n",(*p)[0]);
+    printf("2st element is %d \n",(*p)[1]);
+    printf("3 element is %d \n",(*p)[2]);
+    printf("4 element is %d \n",(*p)[3]);
+    printf("5 element is %d \n",(*p)[4]);
+    
+
+ #include <stdio.h>
+union student {
+    int rollno;
+    char name[20]; // largest element
+    float marks;
+};
+union employee {
+    int id[40]; // largest element
+    char name[20];
+    float salary;
+};
+int main() {
+printf("size of student is %d \n",sizeof(union student));
+printf("size of employee is %d \n",sizeof(union employee));
+return 0;
+}
+
+
+    

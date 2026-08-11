@@ -1,0 +1,48 @@
+ #include <stdio.h>
+union student {
+    int rollno;
+    char name[20]; // largest element
+    float marks;
+};
+union employee {
+    int id[40]; // largest element
+    char name[20];
+    float salary;
+};
+int main() {
+printf("size of student is %d \n",sizeof(union student));
+printf("size of employee is %d \n",sizeof(union employee));
+return 0;
+}
+
+hahahahahahaha
+
+#include <stdio.h>
+#include <string.h>
+struct my_struct {
+    int i;
+    char c[20];
+    float f;
+};
+union my_union {
+    int i;
+    float f;
+    char c[20];
+};
+
+int main() {
+struct my_struct s={1,"jenny",69.6};
+printf("\n === structure === \n");
+printf("i of s is %d \n",s.i);
+printf("c of s is %s \n",s.c);
+printf("f of s is %f \n",s.f);
+union my_union u;
+printf("\n === union === \n");
+u.i=181;
+printf("i of u is %d \n",u.i);
+u.f=181.60;
+printf("f of u is %f \n",u.f);
+strcpy(u.c, "jiya");
+printf("c of u is %s \n",u.c);
+return 0;
+}

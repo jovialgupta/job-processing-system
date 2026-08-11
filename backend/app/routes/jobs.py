@@ -3,12 +3,12 @@ import os
 import shutil
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime
 
 from .. import models
 from ..database import SessionLocal
 from ..schemas import JobResponse
 from ..worker import r
+
 
 router = APIRouter(
     prefix="/jobs",
@@ -46,13 +46,36 @@ def create_job(
     db.commit()
     db.refresh(job)
 
-    r.lpush("job_queue", str(job.id))
+    try:
+        r.lpush("job_queue", str(job.id))
+
+    except Exception:
+        job.status = "FAILED"
+        db.commit()
+
+        raise HTTPException(
+            status_code=503,
+            detail="Could not add job to processing queue"
+        )
 
     return job
 
 
+@router.get("/queue")
+def get_queue():
+    job_ids = r.lrange("job_queue", 0, -1)
+
+    return {
+        "queue_length": len(job_ids),
+        "jobs": job_ids
+    }
+
+
 @router.get("/{job_id}", response_model=JobResponse)
-def get_job(job_id: int, db: Session = Depends(get_db)):
+def get_job(
+    job_id: int,
+    db: Session = Depends(get_db)
+):
     job = db.query(models.Job).filter(
         models.Job.id == job_id
     ).first()
@@ -69,5 +92,3 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
 @router.get("/", response_model=list[JobResponse])
 def get_jobs(db: Session = Depends(get_db)):
     return db.query(models.Job).all()
-
-#API creates → PostgreSQL stores → Redis queues.

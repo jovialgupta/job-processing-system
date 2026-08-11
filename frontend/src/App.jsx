@@ -5,20 +5,27 @@ const API = "http://127.0.0.1:8000";
 
 function App() {
   const [jobs, setJobs] = useState([]);
+  const [queue, setQueue] = useState([]);
   const [file, setFile] = useState(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
-  const loadJobs = async () => {
+  const loadData = async () => {
     try {
-      const res = await fetch(`${API}/jobs/`);
+      const [jobsRes, queueRes] = await Promise.all([
+        fetch(`${API}/jobs/`),
+        fetch(`${API}/jobs/queue`),
+      ]);
 
-      if (!res.ok) {
-        throw new Error("Failed to load jobs");
+      if (!jobsRes.ok || !queueRes.ok) {
+        throw new Error("Failed to load data");
       }
 
-      const data = await res.json();
-      setJobs(data);
+      const jobsData = await jobsRes.json();
+      const queueData = await queueRes.json();
+
+      setJobs(jobsData);
+      setQueue(queueData.jobs || []);
       setError("");
     } catch (err) {
       console.error(err);
@@ -26,8 +33,6 @@ function App() {
     }
   };
 
-  // Create a job and immediately return to the dashboard.
-  // This allows multiple jobs to be submitted one after another.
   const createJob = async () => {
     if (!file) {
       setError("Please select a file first.");
@@ -55,7 +60,7 @@ function App() {
       setFile(null);
       document.getElementById("fileInput").value = "";
 
-      await loadJobs();
+      await loadData();
     } catch (err) {
       console.error(err);
       setError(err.message);
@@ -64,31 +69,29 @@ function App() {
     }
   };
 
-  // Refresh jobs periodically so the dashboard shows
-  // QUEUED -> PROCESSING -> COMPLETED automatically.
   useEffect(() => {
-    loadJobs();
+    loadData();
 
-    const interval = setInterval(loadJobs, 1000);
+    const interval = setInterval(loadData, 1000);
 
     return () => clearInterval(interval);
   }, []);
 
   const queued = jobs.filter(
     (job) => job.status === "QUEUED"
-  ).length;
+  );
 
   const processing = jobs.filter(
     (job) => job.status === "PROCESSING"
-  ).length;
+  );
 
   const completed = jobs.filter(
     (job) => job.status === "COMPLETED"
-  ).length;
+  );
 
   const failed = jobs.filter(
     (job) => job.status === "FAILED"
-  ).length;
+  );
 
   return (
     <div className="app">
@@ -96,66 +99,19 @@ function App() {
       {/* HEADER */}
       <header className="header">
         <div>
-          <div className="brand">
-            <span className="brand-icon">⚡</span>
-            AsyncFlow
-          </div>
-
+          <div className="brand">⚡ File Processing Dashboard</div>
           <p>
-            Asynchronous background job processing system
+            Submit files, monitor queued jobs, and track processing status.
           </p>
         </div>
 
         <div className="system-status">
           <span className="online-dot"></span>
-          Worker System Online
+          Worker Online
         </div>
       </header>
 
       <main className="container">
-
-        {/* ARCHITECTURE */}
-        <section className="architecture">
-
-          <div className="architecture-step">
-            <div className="architecture-icon">📄</div>
-            <div>
-              <strong>Submit Job</strong>
-              <span>FastAPI</span>
-            </div>
-          </div>
-
-          <div className="arrow">→</div>
-
-          <div className="architecture-step">
-            <div className="architecture-icon">📦</div>
-            <div>
-              <strong>Queue</strong>
-              <span>Redis</span>
-            </div>
-          </div>
-
-          <div className="arrow">→</div>
-
-          <div className="architecture-step">
-            <div className="architecture-icon">⚙</div>
-            <div>
-              <strong>Worker</strong>
-              <span>Background Process</span>
-            </div>
-          </div>
-
-          <div className="arrow">→</div>
-
-          <div className="architecture-step">
-            <div className="architecture-icon">✓</div>
-            <div>
-              <strong>Result</strong>
-              <span>Database</span>
-            </div>
-          </div>
-
-        </section>
 
         {/* STATISTICS */}
         <section className="stats">
@@ -166,23 +122,23 @@ function App() {
           </div>
 
           <div className="stat-card queue-card">
-            <span>In Queue</span>
-            <strong>{queued}</strong>
+            <span>Queued</span>
+            <strong>{queue.length}</strong>
           </div>
 
           <div className="stat-card processing-card">
             <span>Processing</span>
-            <strong>{processing}</strong>
+            <strong>{processing.length}</strong>
           </div>
 
           <div className="stat-card completed-card">
             <span>Completed</span>
-            <strong>{completed}</strong>
+            <strong>{completed.length}</strong>
           </div>
 
           <div className="stat-card failed-card">
             <span>Failed</span>
-            <strong>{failed}</strong>
+            <strong>{failed.length}</strong>
           </div>
 
         </section>
@@ -192,10 +148,9 @@ function App() {
 
           <div className="panel-heading">
             <div>
-              <h2>Submit Background Job</h2>
+              <h2>Submit a New Job</h2>
               <p>
-                Jobs are added to the Redis queue and processed
-                asynchronously by the worker.
+                Upload a file and add it to the processing queue.
               </p>
             </div>
           </div>
@@ -208,20 +163,19 @@ function App() {
 
             <div className="upload-content">
               <strong>
-                {file
-                  ? file.name
-                  : "Choose a file to process"}
+                {file ? file.name : "Choose a file to process"}
               </strong>
 
               <span>
                 {file
                   ? `${(file.size / 1024).toFixed(1)} KB`
-                  : "Submit multiple jobs without waiting for completion"}
+                  : "You can submit multiple jobs"}
               </span>
             </div>
 
             <label className="browse-btn">
               Browse
+
               <input
                 id="fileInput"
                 type="file"
@@ -245,117 +199,179 @@ function App() {
             onClick={createJob}
             disabled={!file || creating}
           >
-            {creating ? "Submitting..." : "Submit Job"}
+            {creating ? "Submitting..." : "Create Job"}
           </button>
-
-          <p className="hint">
-            You can submit another job immediately after this one.
-          </p>
 
         </section>
 
-        {/* QUEUE VISUALIZATION */}
+        {/* REDIS QUEUE */}
         <section className="panel">
 
           <div className="panel-heading">
             <div>
-              <h2>Processing Pipeline</h2>
+              <h2>Redis Queue</h2>
               <p>
-                Live view of jobs moving through the system
+                Jobs currently waiting for the background worker.
+              </p>
+            </div>
+
+            <div className="queue-count">
+              {queue.length} waiting
+            </div>
+          </div>
+
+          {queue.length === 0 ? (
+
+            <div className="queue-empty">
+              <div className="queue-empty-icon">✓</div>
+              <strong>Queue is empty</strong>
+              <span>
+                All submitted jobs have been picked up by the worker.
+              </span>
+            </div>
+
+          ) : (
+
+            <div className="redis-queue">
+
+              {queue.map((jobId, index) => {
+
+                const job = jobs.find(
+                  (item) => item.id === Number(jobId)
+                );
+
+                return (
+                  <div
+                    className="queue-item"
+                    key={jobId}
+                  >
+                    <div className="queue-position">
+                      #{index + 1}
+                    </div>
+
+                    <div>
+                      <strong>Job #{jobId}</strong>
+
+                      <span>
+                        {job?.filename || "Waiting for processing"}
+                      </span>
+                    </div>
+
+                    <span className="status queued">
+                      QUEUED
+                    </span>
+                  </div>
+                );
+              })}
+
+            </div>
+          )}
+
+        </section>
+
+        {/* PIPELINE */}
+        <section className="panel">
+
+          <div className="panel-heading">
+            <div>
+              <h2>Job Processing</h2>
+              <p>
+                Live job lifecycle from queue to completion.
               </p>
             </div>
           </div>
 
           <div className="pipeline">
 
+            {/* QUEUED */}
             <div className="pipeline-column">
 
               <div className="pipeline-title">
                 <span className="queue-dot"></span>
                 QUEUED
-                <b>{queued}</b>
+                <b>{queued.length}</b>
               </div>
 
               <div className="pipeline-jobs">
-                {jobs
-                  .filter((job) => job.status === "QUEUED")
-                  .map((job) => (
-                    <div className="pipeline-job" key={job.id}>
-                      <strong>#{job.id}</strong>
-                      <span>{job.filename}</span>
-                    </div>
-                  ))}
 
-                {queued === 0 && (
+                {queued.map((job) => (
+                  <div
+                    className="pipeline-job"
+                    key={job.id}
+                  >
+                    <strong>#{job.id}</strong>
+                    <span>{job.filename}</span>
+                  </div>
+                ))}
+
+                {queued.length === 0 && (
                   <div className="empty-small">
-                    Queue empty
+                    No queued jobs
                   </div>
                 )}
+
               </div>
 
             </div>
 
+            {/* PROCESSING */}
             <div className="pipeline-column">
 
               <div className="pipeline-title">
                 <span className="processing-dot"></span>
                 PROCESSING
-                <b>{processing}</b>
+                <b>{processing.length}</b>
               </div>
 
               <div className="pipeline-jobs">
-                {jobs
-                  .filter(
-                    (job) => job.status === "PROCESSING"
-                  )
-                  .map((job) => (
-                    <div
-                      className="pipeline-job processing-job"
-                      key={job.id}
-                    >
-                      <strong>#{job.id}</strong>
-                      <span>{job.filename}</span>
-                    </div>
-                  ))}
 
-                {processing === 0 && (
+                {processing.map((job) => (
+                  <div
+                    className="pipeline-job processing-job"
+                    key={job.id}
+                  >
+                    <strong>#{job.id}</strong>
+                    <span>{job.filename}</span>
+                  </div>
+                ))}
+
+                {processing.length === 0 && (
                   <div className="empty-small">
                     Worker available
                   </div>
                 )}
+
               </div>
 
             </div>
 
+            {/* COMPLETED */}
             <div className="pipeline-column">
 
               <div className="pipeline-title">
                 <span className="completed-dot"></span>
                 COMPLETED
-                <b>{completed}</b>
+                <b>{completed.length}</b>
               </div>
 
               <div className="pipeline-jobs">
-                {jobs
-                  .filter(
-                    (job) => job.status === "COMPLETED"
-                  )
-                  .slice(0, 5)
-                  .map((job) => (
-                    <div
-                      className="pipeline-job completed-job"
-                      key={job.id}
-                    >
-                      <strong>#{job.id}</strong>
-                      <span>{job.filename}</span>
-                    </div>
-                  ))}
 
-                {completed === 0 && (
+                {completed.map((job) => (
+                  <div
+                    className="pipeline-job completed-job"
+                    key={job.id}
+                  >
+                    <strong>#{job.id}</strong>
+                    <span>{job.filename}</span>
+                  </div>
+                ))}
+
+                {completed.length === 0 && (
                   <div className="empty-small">
                     No completed jobs
                   </div>
                 )}
+
               </div>
 
             </div>
@@ -364,30 +380,30 @@ function App() {
 
         </section>
 
-        {/* ALL JOBS */}
+        {/* JOB HISTORY */}
         <section className="panel">
 
           <div className="panel-heading">
             <div>
               <h2>Job History</h2>
-              <p>
-                All submitted jobs and their current state
-              </p>
+              <p>All submitted jobs.</p>
             </div>
 
             <button
               className="refresh-btn"
-              onClick={loadJobs}
+              onClick={loadData}
             >
               ↻ Refresh
             </button>
           </div>
 
           {jobs.length === 0 ? (
+
             <div className="empty">
               <div>📂</div>
               <p>No jobs submitted yet.</p>
             </div>
+
           ) : (
 
             <div className="table">
@@ -451,7 +467,7 @@ function App() {
       </main>
 
       <footer>
-        AsyncFlow • FastAPI • Redis • SQLAlchemy • Background Worker
+        File Processing Dashboard
       </footer>
 
     </div>
