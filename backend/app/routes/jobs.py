@@ -1,18 +1,20 @@
-from fastapi import APIRouter
+from fastapi import UploadFile, File
+import os
+import shutil
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime
+
 from .. import models
 from ..database import SessionLocal
 from ..schemas import JobResponse
-from fastapi import APIRouter, Depends, HTTPException
 from ..worker import r
 
 router = APIRouter(
     prefix="/jobs",
     tags=["Jobs"]
 )
-@router.post("/")
-def create_job():
-    return {"message": "Job created"}
+
 
 def get_db():
     db = SessionLocal()
@@ -21,33 +23,51 @@ def get_db():
     finally:
         db.close()
 
+
 @router.post("/", response_model=JobResponse)
-def create_job(db: Session = Depends(get_db)):
+def create_job(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    file_path = os.path.join(upload_dir, file.filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
     job = models.Job(
-        filename="test.pdf",
-        status="pending"
+        filename=file.filename,
+        status="QUEUED"
     )
 
     db.add(job)
     db.commit()
     db.refresh(job)
+
     r.lpush("job_queue", str(job.id))
+
     return job
+
 
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(job_id: int, db: Session = Depends(get_db)):
-    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    job = db.query(models.Job).filter(
+        models.Job.id == job_id
+    ).first()
 
     if job is None:
         raise HTTPException(
             status_code=404,
             detail="Job not found"
         )
-    return job
-@router.get("/",response_model=list[JobResponse])
-def get_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(models.Job).all()
-    return jobs
 
+    return job
+
+
+@router.get("/", response_model=list[JobResponse])
+def get_jobs(db: Session = Depends(get_db)):
+    return db.query(models.Job).all()
 
 #API creates → PostgreSQL stores → Redis queues.
