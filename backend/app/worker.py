@@ -3,6 +3,7 @@ import multiprocessing
 import os
 from datetime import datetime
 import pymupdf
+import time
 
 from .database import SessionLocal
 from . import models
@@ -20,6 +21,11 @@ def run_worker():
     while True:
         # Wait for a job in Redis
         job_id = r.brpop("job_queue")[1]
+        print(
+    f"{multiprocessing.current_process().name} picked job {job_id} | "
+    f"Remaining queue: {r.llen('job_queue')}",
+    flush=True
+)
 
         db = SessionLocal()
         job = None
@@ -45,6 +51,7 @@ def run_worker():
             # Mark job as processing
             job.status = "PROCESSING"
             db.commit()
+            time.sleep(5)
 
             print(
             f"{multiprocessing.current_process().name} | "

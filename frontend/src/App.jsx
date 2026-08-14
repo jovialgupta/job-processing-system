@@ -7,41 +7,10 @@ function App() {
   const [jobs, setJobs] = useState([]);
   const [queue, setQueue] = useState([]);
   const [file, setFile] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const submitJobs = async () => {
-    if (selectedFiles.length === 0) {
-      alert("Please select at least one PDF.");
-      return;
-    }
-
-    if (selectedFiles.length > 10) {
-      alert("You can upload a maximum of 10 PDFs at once.");
-      return;
-    }
-
-    setSubmitting(true);
-
-    try {
-      for (const file of selectedFiles) {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        await fetch("http://localhost:8000/jobs/", {
-          method: "POST",
-          body: formData,
-        });
-      }
-
-      setSelectedFiles([]);
-    } catch (error) {
-      console.error("Job submission failed:", error);
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const [error, setError] = useState("");
 
   const loadData = async () => {
     try {
@@ -65,6 +34,14 @@ function App() {
       setError("Backend is not reachable.");
     }
   };
+
+  useEffect(() => {
+    loadData();
+
+    const interval = setInterval(loadData, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const createJob = async () => {
     if (!file) {
@@ -91,7 +68,11 @@ function App() {
       }
 
       setFile(null);
-      document.getElementById("fileInput").value = "";
+
+      const input = document.getElementById("fileInput");
+      if (input) {
+        input.value = "";
+      }
 
       await loadData();
     } catch (err) {
@@ -102,13 +83,51 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    loadData();
+  const submitJobs = async () => {
+    if (selectedFiles.length === 0) {
+      alert("Please select at least one PDF.");
+      return;
+    }
 
-    const interval = setInterval(loadData, 1000);
+    if (selectedFiles.length > 10) {
+      alert("You can upload a maximum of 10 PDFs at once.");
+      return;
+    }
 
-    return () => clearInterval(interval);
-  }, []);
+    setSubmitting(true);
+    setError("");
+
+    try {
+      for (const selectedFile of selectedFiles) {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+
+        const res = await fetch(`${API}/jobs/`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          throw new Error(`Failed to submit ${selectedFile.name}`);
+        }
+      }
+
+      setSelectedFiles([]);
+
+      const input = document.getElementById("multiFileInput");
+      if (input) {
+        input.value = "";
+      }
+
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const sortedJobs = [...jobs].sort((a, b) => b.id - a.id);
 
   const queued = sortedJobs.filter(
@@ -127,21 +146,23 @@ function App() {
     (job) => job.status === "FAILED"
   );
 
+  const formatResult = (result) => {
+    if (!result) {
+      return "—";
+    }
+
+    return result
+      .replace("Processing failed:", "Processing failed:\n")
+      .replace(". Pages:", "\nPages:")
+      .replace(". Characters extracted:", "\nCharacters extracted:");
+  };
+
   return (
     <div className="app">
 
-      {/* HEADER */}
       <header className="header">
-        <div>
-          <div className="brand">⚡ File Processing Dashboard</div>
-          <p>
-            Submit files, monitor queued jobs, and track processing status.
-          </p>
-        </div>
-
-        <div className="system-status">
-          <span className="online-dot"></span>
-          Worker Online
+        <div className="brand">
+          Job Processing Dashboard
         </div>
       </header>
 
@@ -177,14 +198,24 @@ function App() {
 
         </section>
 
+        {/* ERROR */}
+        {
+          error && (
+            <div className="error-box">
+              {error}
+            </div>
+          )
+        }
+
         {/* CREATE JOB */}
+        {/* SUBMIT JOBS */}
         <section className="panel">
 
           <div className="panel-heading">
             <div>
-              <h2>Submit a New Job</h2>
+              <h2>Submit Jobs</h2>
               <p>
-                Upload a file and add it to the processing queue.
+                Select one or more PDF files and add them to the processing queue.
               </p>
             </div>
           </div>
@@ -196,126 +227,87 @@ function App() {
             </div>
 
             <div className="upload-content">
+
               <strong>
-                {file ? file.name : "Choose a file to process"}
+                {selectedFiles.length > 0
+                  ? `${selectedFiles.length} file${selectedFiles.length > 1 ? "s" : ""} selected`
+                  : "Choose files to process"}
               </strong>
 
               <span>
-                {file
-                  ? `${(file.size / 1024).toFixed(1)} KB`
-                  : "You can submit multiple jobs"}
+                Select up to 10 PDF files
               </span>
-            </div>
-
-            <label className="browse-btn">
-              Browse
 
               <input
+                id="multiFileInput"
+                className="hidden-file-input"
                 type="file"
                 accept=".pdf"
                 multiple
-                onChange={(e) => setSelectedFiles(Array.from(e.target.files))}
-                disabled={submitting}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+
+                  if (files.length > 10) {
+                    alert("You can upload a maximum of 10 PDFs at once.");
+                    e.target.value = "";
+                    setSelectedFiles([]);
+                    return;
+                  }
+
+                  setSelectedFiles(files);
+                }}
               />
 
-              <p>
-                {selectedFiles.length} file(s) selected
-              </p>
+            </div>
+            <label
+              htmlFor="multiFileInput"
+              className="file-btn"
+            >
+              Choose Files
             </label>
 
+            <button
+              className="primary-btn"
+              onClick={submitJobs}
+              disabled={
+                submitting ||
+                selectedFiles.length === 0
+              }
+            >
+              {submitting ? "Submitting..." : "Submit Jobs"}
+            </button>
+
           </div>
 
-          {error && (
-            <div className="error">
-              ⚠ {error}
-            </div>
-          )}
+          {selectedFiles.length > 0 && (
+            <div className="selected-files">
 
-          <button
-            className="create-btn"
-            onClick={submitJobs}
-            disabled={selectedFiles.length === 0 || submitting}
-          >
-            {submitting
-              ? "Submitting..."
-              : `Submit ${selectedFiles.length} Job${selectedFiles.length !== 1 ? "s" : ""}`}
-          </button>
+              <strong>
+                Selected files:
+              </strong>
 
-        </section>
-
-        {/* REDIS QUEUE */}
-        <section className="panel">
-
-          <div className="panel-heading">
-            <div>
-              <h2>Redis Queue</h2>
-              <p>
-                Jobs currently waiting for the background worker.
-              </p>
-            </div>
-
-            <div className="queue-count">
-              {queue.length} waiting
-            </div>
-          </div>
-
-          {queue.length === 0 ? (
-
-            <div className="queue-empty">
-              <div className="queue-empty-icon">✓</div>
-              <strong>Queue is empty</strong>
-              <span>
-                All submitted jobs have been picked up by the worker.
-              </span>
-            </div>
-
-          ) : (
-
-            <div className="redis-queue">
-
-              {queue.map((jobId, index) => {
-
-                const job = jobs.find(
-                  (item) => item.id === Number(jobId)
-                );
-
-                return (
-                  <div
-                    className="queue-item"
-                    key={jobId}
-                  >
-                    <div className="queue-position">
-                      #{index + 1}
-                    </div>
-
-                    <div>
-                      <strong>Job #{jobId}</strong>
-
-                      <span>
-                        {job?.filename || "Waiting for processing"}
-                      </span>
-                    </div>
-
-                    <span className="status queued">
-                      QUEUED
-                    </span>
-                  </div>
-                );
-              })}
+              {selectedFiles.map((selectedFile, index) => (
+                <div
+                  className="selected-file"
+                  key={`${selectedFile.name}-${index}`}
+                >
+                  {selectedFile.name}
+                </div>
+              ))}
 
             </div>
           )}
 
         </section>
 
-        {/* PIPELINE */}
+        {/* QUEUE PIPELINE */}
         <section className="panel">
 
           <div className="panel-heading">
             <div>
-              <h2>Job Processing</h2>
+              <h2>Redis Queue & Processing</h2>
               <p>
-                Live job lifecycle from queue to completion.
+                Live view of jobs moving through the processing pipeline.
               </p>
             </div>
           </div>
@@ -326,7 +318,7 @@ function App() {
             <div className="pipeline-column">
 
               <div className="pipeline-title">
-                <span className="queue-dot"></span>
+                <span className="queued-dot"></span>
                 QUEUED
                 <b>{queued.length}</b>
               </div>
@@ -335,10 +327,10 @@ function App() {
 
                 {queued.map((job) => (
                   <div
-                    className="pipeline-job"
+                    className="pipeline-job queued-job"
                     key={job.id}
                   >
-                    <strong>#{job.id}</strong>
+                    <strong>{job.id}</strong>
                     <span>{job.filename}</span>
                   </div>
                 ))}
@@ -369,7 +361,7 @@ function App() {
                     className="pipeline-job processing-job"
                     key={job.id}
                   >
-                    <strong>#{job.id}</strong>
+                    <strong>{job.id}</strong>
                     <span>{job.filename}</span>
                   </div>
                 ))}
@@ -400,7 +392,7 @@ function App() {
                     className="pipeline-job completed-job"
                     key={job.id}
                   >
-                    <strong>#{job.id}</strong>
+                    <strong>{job.id}</strong>
                     <span>{job.filename}</span>
                   </div>
                 ))}
@@ -423,17 +415,12 @@ function App() {
         <section className="panel">
 
           <div className="panel-heading">
+
             <div>
               <h2>Job History</h2>
               <p>All submitted jobs.</p>
             </div>
 
-            <button
-              className="refresh-btn"
-              onClick={loadData}
-            >
-              ↻ Refresh
-            </button>
           </div>
 
           {jobs.length === 0 ? (
@@ -462,8 +449,8 @@ function App() {
                   key={job.id}
                 >
 
-                  <strong>
-                    #{job.id}
+                  <strong className="job-id">
+                    {job.id}
                   </strong>
 
                   <span className="filename">
@@ -479,7 +466,7 @@ function App() {
                   </span>
 
                   <span className="result">
-                    {job.result || "—"}
+                    {formatResult(job.result)}
                   </span>
 
                   <span className="created">
@@ -500,13 +487,13 @@ function App() {
 
         </section>
 
-      </main>
+      </main >
 
       <footer>
-        Async File processing Dashboard
+        Async File Processing Dashboard
       </footer>
 
-    </div>
+    </div >
   );
 }
 
