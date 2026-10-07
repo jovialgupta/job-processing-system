@@ -7,9 +7,9 @@ The API accepts a PDF upload, stores a job record, and returns a job ID immediat
 ## Highlights
 
 - **Non-blocking API:** job submission returns in **24 ms avg (60 ms p95)** while processing happens in the background.
-- **Horizontal worker scaling:** going from 1 to 3 worker processes raised throughput from **3.13 to 6.58 jobs/sec (2.1x)** on a 30-job batch of 148-page PDFs.
-- **Crash-safe queue:** jobs move atomically from the queue to an in-flight list (`BLMOVE`). Interrupted jobs are re-queued on startup.
-- **Bounded retries:** transient failures are retried up to 3 times. Permanent failures (corrupt PDF, no extractable text) fail immediately.
+- **Worker process scaling:** going from 1 to 3 worker processes raised throughput from **3.13 to 6.58 jobs/sec (2.1x)** on a 30-job batch of 148-page PDFs.
+- **Worker crash recovery:** jobs move atomically from the queue to an in-flight list (`BLMOVE`). Interrupted jobs are re-queued on startup.
+- **Bounded retries:** transient failures are retried up to 3 times. Transient processing failures are retried up to 3 times before the job is marked `FAILED`.
 - **Persistent job lifecycle:** `QUEUED -> PROCESSING -> COMPLETED / FAILED`, with `created_at`, `started_at`, `completed_at`, `retry_count`, `result` and `error` stored in PostgreSQL.
 - **Hardened uploads:** extension and `%PDF-` magic-byte validation, size limit, UUID file storage (no filename collisions or path tricks).
 - **Containerized:** one command starts PostgreSQL, Redis, the API and the workers.
@@ -154,8 +154,7 @@ Measured with `backend/benchmark.py`: 30 submissions of the same 148-page PDF (~
 
 - **Submit latency (API response time):** 24 ms average, 60 ms p95.
 - **Estimated inline latency:** ~430 ms. This is calculated as submit time + average processing time, i.e. roughly what a client would wait if the request processed the PDF itself. It is an estimate, not a measurement of a separate synchronous implementation.
-- Scaling is sub-linear (2.1x on 3 workers) because workers share PostgreSQL and Redis and are limited by available CPU cores.
-- Test machine: *[add CPU model / core count / RAM here]*
+- Scaling is sub-linear (2.1x on 3 workers) due to shared resources and workload characteristics.
 
 To reproduce:
 
