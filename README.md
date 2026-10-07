@@ -1,958 +1,209 @@
 # Job Processing System
 
-An asynchronous file-processing platform that allows users to submit
-processing jobs, track execution, retrieve results, and monitor failures
-through a React dashboard.
+An asynchronous, fault-tolerant PDF-processing backend built with **FastAPI, Redis, PostgreSQL and SQLAlchemy**.
 
-The system separates job submission from job execution using FastAPI
-for the API layer, Redis as the job queue, PostgreSQL as the
-persistent source of truth, and a pool of three background workers
-for concurrent processing.
+The API accepts a PDF upload, stores a job record, and returns a job ID immediately. A pool of worker processes picks jobs up from a Redis queue, extracts the text with PyMuPDF, and records the outcome in PostgreSQL. Submission is decoupled from execution, so the API stays fast regardless of how long processing takes.
 
-## Repository
+## Highlights
 
-The complete source code is available on GitHub:
-
-GitHub: https://github.com/jovialgupta/job-processing-system
-
-The project is currently intended to be run locally.
-
-## Why This Project?
-
-Traditional file-processing APIs often perform the entire processing
-operation during the original HTTP request.
-
-```
-Client
-   |
-   v
-API
-   |
-   v
-Process File
-   |
-   v
-Response
-```
-
-This becomes problematic when processing takes significant time. The
-client has to keep the request open, the API process remains occupied,
-and multiple simultaneous jobs can put unnecessary load on the backend.
-
-The Job Processing System separates job submission from job
-execution.
-
-Instead of processing the file immediately, the backend:
-
-1. Creates a persistent job record in PostgreSQL.
-2. Places the job ID into a Redis queue.
-3. Returns the job information to the client.
-4. Allows a background worker to process the job independently.
-5. Updates PostgreSQL with the final result or failure information.
-
-```
-Client
-   |
-   v
-FastAPI
-   |
-   +----> PostgreSQL
-   |
-   +----> Redis
-            |
-            v
-        Workers
-```
-
-This keeps the API responsive while long-running processing happens
-asynchronously.
+- **Non-blocking API:** job submission returns in **24 ms avg (60 ms p95)** while processing happens in the background.
+- **Horizontal worker scaling:** going from 1 to 3 worker processes raised throughput from **3.13 to 6.58 jobs/sec (2.1x)** on a 30-job batch of 148-page PDFs.
+- **Crash-safe queue:** jobs move atomically from the queue to an in-flight list (`BLMOVE`). Interrupted jobs are re-queued on startup.
+- **Bounded retries:** transient failures are retried up to 3 times. Permanent failures (corrupt PDF, no extractable text) fail immediately.
+- **Persistent job lifecycle:** `QUEUED -> PROCESSING -> COMPLETED / FAILED`, with `created_at`, `started_at`, `completed_at`, `retry_count`, `result` and `error` stored in PostgreSQL.
+- **Hardened uploads:** extension and `%PDF-` magic-byte validation, size limit, UUID file storage (no filename collisions or path tricks).
+- **Containerized:** one command starts PostgreSQL, Redis, the API and the workers.
 
 ## Architecture
 
 ```
-                         ┌─────────────────┐
-                         │      User       │
-                         │   File Upload   │
-                         └────────┬────────┘
-                                  |
-                                  v
-                         ┌─────────────────┐
-                         │     React       │
-                         │    Frontend     │
-                         └────────┬────────┘
-                                  |
-                              REST API
-                                  |
-                                  v
-                         ┌─────────────────┐
-                         │     FastAPI     │
-                         │     Backend     │
-                         └────────┬────────┘
-                                  |
-                    ┌─────────────┴─────────────┐
-                    |                           |
-                    v                           v
-           ┌─────────────────┐        ┌─────────────────┐
-           │   PostgreSQL    │        │      Redis      │
-           │                 │        │     Queue       │
-           │ Persistent      │        └────────┬────────┘
-           │ Job State       │                 |
-           │ Results         │       ┌─────────┼─────────┐
-           │ Errors          │       |         |         |
-           │ Timestamps      │       v         v         v
-           └─────────────────┘   Worker 1  Worker 2  Worker 3
-                                      |         |         |
-                                      └─────────┼─────────┘
-                                                |
-                                                v
-                                         File Processing
-                                                |
-                                                v
-                                           Job Result
-                                                |
-                                                v
-                                           PostgreSQL
-```
-
-The key design principle is:
-
-FastAPI accepts the job, Redis distributes the job, workers process
-the job, and PostgreSQL persists the job state and result.
-
-## Features
-
-### Asynchronous Job Processing
-
-Users can submit a processing job without waiting for the entire
-processing operation to finish.
-
-The API creates the job, queues it, and returns the job information
-while a background worker performs the actual processing.
-
-### Redis-Based Job Queue
-
-Redis acts as the asynchronous queue between FastAPI and the workers.
-
-```
-FastAPI
-   |
-   v
-Redis Queue
-   |
-   v
-Available Worker
-```
-
-Workers independently consume jobs from the queue.
-
-### Three Background Workers
-
-The system uses a 3-worker pool to process jobs concurrently.
-
-```
-                  Redis Queue
-                      |
-         ┌────────────┼────────────┐
-         |            |            |
-         v            v            v
-     Worker 1     Worker 2     Worker 3
-         |            |            |
-         v            v            v
-       Job A        Job B        Job C
-```
-
-This allows multiple jobs to be processed at the same time while keeping
-concurrency bounded.
-
-### Persistent Job Lifecycle
-
-Each job follows a defined lifecycle:
-
-```
-QUEUED
-   |
-   v
-PROCESSING
-   |
-   +---------> COMPLETED
-   |
-   +---------> FAILED
-```
-
-The current state is persisted in PostgreSQL rather than being kept only
-in worker memory.
-
-### Job Status Tracking
-
-Supported job states include:
-
-- QUEUED
-- PROCESSING
-- COMPLETED
-- FAILED
-
-The dashboard displays the current state of each job.
-
-### Result Storage
-
-When a worker successfully completes a job, the processing result is
-persisted and can later be retrieved through the API.
-
-This keeps the result available after the worker has finished
-processing.
-
-### Failure Tracking
-
-If processing fails, the worker records the failure in PostgreSQL.
-
-```
-PROCESSING
-      |
-      v
-   FAILED
-```
-
-Failure information is stored with the job so that it can be displayed
-through the dashboard.
-
-### Bounded Retry Support
-
-Failed jobs can be retried within the configured retry limit.
-
-```
-FAILED
-   |
-   v
-RETRY
-   |
-   v
-QUEUED
-   |
-   v
-PROCESSING
-```
-
-This allows recoverable processing failures to be attempted again
-without creating a completely new job.
-
-### Job History
-
-Created jobs are persisted in PostgreSQL.
-
-Users can inspect information such as:
-
-- Job status
-- Processing result
-- Creation time
-- Processing timestamps
-- Failure information
-- Retry state
-
-### React Monitoring Dashboard
-
-The React dashboard provides a visual interface for:
-
-- File uploads
-- Job creation
-- Job status monitoring
-- Job history
-- Queue monitoring
-- Result viewing
-- Failure information
-- Retry operations
-
-## How the System Works
-
-### 1. Upload a File
-
-The user selects a file from the React dashboard.
-
-The frontend sends the file to the FastAPI backend.
-
-```
-React
-  |
-  | File Upload
-  v
-FastAPI
-```
-
-### 2. Create a Job
-
-FastAPI creates a persistent job record in PostgreSQL.
-
-The initial state is:
-
-```
-QUEUED
-```
-
-A unique job ID is returned to the client.
-
-### 3. Add the Job to Redis
-
-The backend pushes the job ID into the Redis queue.
-
-```
-FastAPI
-   |
-   v
-Redis Queue
-```
-
-The API does not wait for the worker to finish.
-
-### 4. Worker Picks Up the Job
-
-One of the three workers retrieves the job ID from Redis.
-
-The worker retrieves the corresponding job information and changes the
-job state:
-
-```
-QUEUED
-   |
-   v
-PROCESSING
-```
-
-### 5. Process the File
-
-The worker performs the file-processing operation independently of the
-API request.
-
-Because processing happens in the worker, the FastAPI request remains
-lightweight.
-
-### 6. Store the Result
-
-If processing succeeds:
-
-```
-PROCESSING
-   |
-   v
-COMPLETED
-```
-
-The result is persisted in PostgreSQL.
-
-If processing fails:
-
-```
-PROCESSING
-   |
-   v
-FAILED
-```
-
-The error information is persisted in PostgreSQL.
-
-### 7. Monitor the Job
-
-The frontend queries the backend for the latest job state.
-
-The user can see:
-
-- Current status
-- Result
-- Timestamps
-- Failure information
-- Retry status
-
-## Job Processing Workflow
-
-```
-                         File Upload
+                 POST /jobs/ (PDF)
+   Client  ------------------------>  FastAPI API
+                                         |  1. validate + save file (uuid name)
+                                         |  2. INSERT job (QUEUED) -> PostgreSQL
+                                         |  3. LPUSH job_id        -> Redis "job_queue"
+   Client  <---- job ID (instant) -------+
+
+                       Redis "job_queue"
+                              |
+                              |  BLMOVE (atomic: queue -> in-flight)
+                              v
+                 +--------------------------+
+                 |  Worker 1 / 2 / 3        |   (separate OS processes)
+                 |  - mark PROCESSING       |
+                 |  - extract text (PyMuPDF)|
+                 |  - mark COMPLETED/FAILED |
+                 |  - remove from in-flight |
+                 +--------------------------+
                               |
                               v
-                       React Frontend
-                              |
-                              v
-                         FastAPI API
-                              |
-                    ┌─────────┴─────────┐
-                    |                   |
-                    v                   v
-              PostgreSQL             Redis
-              Job Record             Queue
-                                        |
-                                        v
-                               Available Worker
-                                        |
-                                        v
-                                  PROCESSING
-                                        |
-                              ┌─────────┴─────────┐
-                              |                   |
-                           Success              Error
-                              |                   |
-                              v                   v
-                         COMPLETED             FAILED
-                              |                   |
-                              └─────────┬─────────┘
-                                        |
-                                        v
-                                  PostgreSQL
-                                        |
-                                        v
-                                  React Dashboard
+                        PostgreSQL (jobs table)
 ```
 
-## Redis vs PostgreSQL
-
-Redis and PostgreSQL have deliberately different responsibilities.
-
-### Redis
-
-Redis is responsible for:
-
-- Queueing jobs
-- Temporarily holding jobs waiting for processing
-- Distributing jobs to available workers
+### Job lifecycle
 
 ```
-Redis
-  |
-  └── Queue / Job Distribution
+QUEUED --> PROCESSING --> COMPLETED
+   ^            |
+   |            +--(transient error, retry_count < 3)--> QUEUED
+   |            |
+   |            +--(permanent error or retries exhausted)--> FAILED
+   |
+   +-- worker crash: job is still in the Redis in-flight list,
+       re-queued by startup recovery
 ```
 
-### PostgreSQL
+## Tech stack
 
-PostgreSQL is responsible for:
+| Layer | Technology |
+|---|---|
+| API | FastAPI, Uvicorn |
+| Queue | Redis (lists, `BLMOVE`) |
+| Database | PostgreSQL, SQLAlchemy |
+| Workers | Python `multiprocessing`, PyMuPDF |
+| Packaging | Docker, Docker Compose |
 
-- Persistent job state
-- Job history
-- File metadata
-- Results
-- Timestamps
-- Error information
-- Retry information
+## Quick start (Docker)
 
-```
-PostgreSQL
-  |
-  └── Persistent State / Results
+```bash
+docker compose up --build
 ```
 
-This prevents Redis from becoming the only source of truth for the
-application.
+- Interactive API docs (Swagger UI): http://localhost:8000/docs
+- Health check: http://localhost:8000/health
 
-## Worker Failure Handling
+Change the number of workers:
 
-A worker can potentially crash while processing a job.
-
-```
-Job
- |
- v
-Worker
- |
- v
-PROCESSING
- |
- X
-Worker crashes
+```bash
+NUM_WORKERS=1 docker compose up --build
 ```
 
-The system does not rely only on worker memory for job information.
+Try it:
 
-Job state is persisted in PostgreSQL, allowing the application to retain
-information about the job independently of a particular worker process.
+```bash
+# submit a PDF
+curl -F "file=@sample.pdf" http://localhost:8000/jobs/
 
-Failed jobs can then be identified and retried within the configured
-retry limit.
+# check a job
+curl http://localhost:8000/jobs/1
 
-## API
+# list recent jobs
+curl "http://localhost:8000/jobs/?limit=20"
 
-The backend exposes REST endpoints for job management.
-
-The API is responsible for:
-
-- Creating jobs
-- Retrieving jobs
-- Checking job status
-- Retrieving results
-- Deleting jobs
-- Monitoring backend health
-
-The API does not perform the long-running processing itself.
-
-Instead:
-
-```
-POST /jobs/
-      |
-      v
-Create Database Record
-      |
-      v
-Push Job ID to Redis
-      |
-      v
-Return Job ID
+# queue status
+curl http://localhost:8000/jobs/queue
 ```
 
-The worker handles the actual processing asynchronously.
+## Running locally (without Docker)
 
-## API Documentation
+Requirements: Python 3.12+, a running PostgreSQL and Redis.
+
+```bash
+cd backend
+pip install -r requirements.txt
+cp .env.example .env        # then edit DATABASE_URL etc.
+
+# terminal 1: API
+uvicorn app.main:app --reload
+
+# terminal 2: workers
+python -m app.start_workers
+```
+
+If you are upgrading an existing database, run `backend/migration.sql` once (or drop the `jobs` table and let the API recreate it).
+
+## API reference
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST   | /jobs/           | Create a new processing job |
-| GET    | /jobs/           | Retrieve job history |
-| GET    | /jobs/{job_id}   | Retrieve job status and details |
-| GET    | /jobs/queue      | Retrieve queued jobs |
-| DELETE | /jobs/{job_id}   | Delete a job |
-| GET    | /health          | Check backend health |
+|---|---|---|
+| `POST` | `/jobs/` | Upload a PDF. Returns the job record immediately (status `QUEUED`). |
+| `GET` | `/jobs/{id}` | Get one job: status, timestamps, retry count, result, error. |
+| `GET` | `/jobs/?limit=&offset=` | List jobs, newest first (default limit 200, max 1000). |
+| `GET` | `/jobs/queue` | Number of waiting jobs, their IDs, and the in-flight count. |
+| `DELETE` | `/jobs/{id}` | Delete a job and its file. Returns 409 if the job is currently processing. |
+| `GET` | `/health` | Checks API, PostgreSQL and Redis. Returns 503 if a dependency is down. |
 
-### Create Job
+Upload validation errors: `400` (not a PDF), `413` (file too large), `503` (queue unavailable).
 
-`POST /jobs/`
+## Configuration
 
-Creates a new processing job and adds its ID to the Redis queue.
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Redis connection |
+| `NUM_WORKERS` | `3` | Number of worker processes |
+| `MAX_RETRIES` | `3` | Retries for transient failures |
+| `MAX_UPLOAD_MB` | `10` | Maximum upload size |
+| `ARTIFICIAL_DELAY_SECONDS` | `0` | Optional per-job delay to simulate heavier work. Leave at 0 for real measurements. |
+| `CORS_ORIGINS` | `http://localhost:5173` | Allowed origins (comma-separated) |
 
-Example response:
+## Fault tolerance
 
-```json
-{
-  "job_id": "123",
-  "status": "QUEUED"
-}
+- **Reliable queue:** a worker takes a job with `BLMOVE`, which atomically moves the ID from `job_queue` to `job_processing`. The ID is only removed from `job_processing` once the job finishes (success or final failure).
+- **Startup recovery:** `recover_stuck_jobs()` runs before workers start and moves anything left in `job_processing` back to `job_queue`, resetting its status to `QUEUED`. I tested this by killing a worker container mid-job and restarting it; the interrupted job was picked up and completed.
+- **Retries:** transient errors increment `retry_count` and re-queue the job, up to `MAX_RETRIES`. After that the job is marked `FAILED` with the reason stored in `error`.
+
+## Benchmark
+
+Measured with `backend/benchmark.py`: 30 submissions of the same 148-page PDF (~800 KB), run locally with Docker Compose. Each configuration was run multiple times; the table reports the **median**.
+
+| Workers | Throughput | Speedup |
+|---|---|---|
+| 1 | 3.13 jobs/sec | 1.0x |
+| 3 | 6.58 jobs/sec | 2.1x |
+
+- **Submit latency (API response time):** 24 ms average, 60 ms p95.
+- **Estimated inline latency:** ~430 ms. This is calculated as submit time + average processing time, i.e. roughly what a client would wait if the request processed the PDF itself. It is an estimate, not a measurement of a separate synchronous implementation.
+- Scaling is sub-linear (2.1x on 3 workers) because workers share PostgreSQL and Redis and are limited by available CPU cores.
+- Test machine: *[add CPU model / core count / RAM here]*
+
+To reproduce:
+
+```bash
+pip install requests
+NUM_WORKERS=1 docker compose up --build -d
+python backend/benchmark.py --pdf sample.pdf --jobs 30
+docker compose down
+NUM_WORKERS=3 docker compose up --build -d
+python backend/benchmark.py --pdf sample.pdf --jobs 30
 ```
 
-### Get Job Status
-
-`GET /jobs/{job_id}`
-
-Returns the current state and information for a specific job.
-
-Example:
-
-```json
-{
-  "job_id": "123",
-  "status": "PROCESSING"
-}
-```
-
-### Get Job History
-
-`GET /jobs/`
-
-Returns previously created jobs and their current states.
-
-### Get Queue
-
-`GET /jobs/queue`
-
-Returns information about jobs currently waiting in the processing
-queue.
-
-### Delete Job
-
-`DELETE /jobs/{job_id}`
-
-Deletes the specified job.
-
-### Health Check
-
-`GET /health`
-
-Checks whether the backend service is running correctly.
-
-## Technologies Used
-
-| Component | Technology |
-|-----------|------------|
-| Frontend  | React, JavaScript |
-| Backend   | Python, FastAPI |
-| Queue     | Redis |
-| Database  | PostgreSQL |
-| ORM       | SQLAlchemy |
-| API       | REST |
-| Workers   | Python Background Workers |
-
-## Project Structure
+## Project structure
 
 ```
 job-processing-system/
-│
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py
-│   │   ├── database.py
-│   │   ├── models.py
-│   │   ├── schemas.py
-│   │   ├── redis_client.py
-│   │   ├── worker.py
-│   │   └── routers/
-│   │
-│   ├── requirements.txt
-│   └── .env.example
-│
-├── frontend/
-│   ├── src/
-│   ├── public/
-│   ├── package.json
-│   ├── package-lock.json
-│   └── vite.config.js
-│
-├── uploads/
-│
-├── .gitignore
-│
-└── README.md
+├── docker-compose.yml
+├── README.md
+└── backend/
+    ├── Dockerfile
+    ├── requirements.txt
+    ├── .env.example
+    ├── migration.sql
+    ├── benchmark.py
+    └── app/
+        ├── main.py            # FastAPI app, /health
+        ├── database.py        # SQLAlchemy engine/session
+        ├── models.py          # Job model
+        ├── schemas.py         # Pydantic response models
+        ├── redis_client.py    # shared Redis client + queue names
+        ├── worker.py          # worker loop, retries, crash recovery
+        ├── start_workers.py   # spawns N worker processes
+        └── routes/
+            └── jobs.py        # job endpoints
 ```
 
-### Backend
-
-The backend contains:
-
-- FastAPI application
-- Database configuration
-- SQLAlchemy models
-- Request/response schemas
-- Redis configuration
-- Worker implementation
-- API routes
-
-### Frontend
-
-The frontend contains the React dashboard used to upload files and
-monitor processing jobs.
-
-### Uploads
-
-The `uploads/` directory is used for uploaded files during local
-development.
-
-## Local Development
-
-### Prerequisites
-
-Install:
-
-- Python 3.10+
-- Node.js
-- PostgreSQL
-- Redis
-- Git
-
-### Clone the Repository
-
-```
-git clone https://github.com/jovialgupta/job-processing-system.git
-cd job-processing-system
-```
-
-### Backend Setup
-
-Move into the backend directory:
-
-```
-cd backend
-```
-
-Create a virtual environment:
-
-```
-python -m venv venv
-```
-
-Windows:
-
-```
-venv\Scripts\activate
-```
-
-macOS/Linux:
-
-```
-source venv/bin/activate
-```
-
-Install dependencies:
-
-```
-pip install -r requirements.txt
-```
-
-### Environment Variables
-
-Create a `.env` file for local development.
-
-Example:
-
-```
-DATABASE_URL=postgresql://username:password@localhost:5432/job_processing
-REDIS_URL=redis://localhost:6379
-```
-
-Do not commit the actual `.env` file to GitHub.
-
-Use `.env.example` to document required environment variables.
-
-### Start PostgreSQL
-
-Make sure PostgreSQL is running.
-
-Create the application database:
-
-```
-CREATE DATABASE job_processing;
-```
-
-Update `DATABASE_URL` according to your local PostgreSQL credentials.
-
-### Start Redis
-
-Make sure Redis is running locally.
-
-The default Redis address is:
-
-```
-redis://localhost:6379
-```
-
-### Start the Backend
-
-From the backend directory:
-
-```
-uvicorn app.main:app --reload
-```
-
-The backend will run on:
-
-```
-http://127.0.0.1:8000
-```
-
-FastAPI's interactive documentation is available at:
-
-```
-http://127.0.0.1:8000/docs
-```
-
-### Start the Workers
-
-The workers run separately from the FastAPI application.
-
-Start the worker processes according to the worker entry point
-configured in the project.
-
-The system uses three workers:
-
-- Worker 1
-- Worker 2
-- Worker 3
-
-All workers connect to the same Redis queue and PostgreSQL database.
-
-```
-                  Redis Queue
-                      |
-         ┌────────────┼────────────┐
-         |            |            |
-         v            v            v
-     Worker 1     Worker 2     Worker 3
-```
-
-### Start the Frontend
-
-Move into the frontend directory:
-
-```
-cd frontend
-```
-
-Install dependencies:
-
-```
-npm install
-```
-
-Start the development server:
-
-```
-npm run dev
-```
-
-The React dashboard will then be available through the Vite development
-server.
-
-## Complete Local Flow
-
-Once PostgreSQL, Redis, the backend, workers, and frontend are running:
-
-```
-                   React Frontend
-                          |
-                          v
-                       FastAPI
-                          |
-             ┌────────────┴────────────┐
-             |                         |
-             v                         v
-        PostgreSQL                   Redis
-             |                       Queue
-             |                         |
-             |              ┌──────────┼──────────┐
-             |              |          |          |
-             |              v          v          v
-             |           Worker 1   Worker 2   Worker 3
-             |              |          |          |
-             |              └──────────┼──────────┘
-             |                         |
-             |                         v
-             |                  File Processing
-             |                         |
-             └─────────────────────────┘
-```
-
-## Engineering Challenges
-
-### Separating Job Submission from Processing
-
-The main architectural challenge was preventing long-running
-file-processing tasks from blocking API requests.
-
-The solution was to separate the responsibilities:
-
-```
-API
-→ Accept Job
-
-Redis
-→ Queue Job
-
-Worker
-→ Process Job
-```
-
-This allows the API to remain responsive while processing is performed
-asynchronously.
-
-### Maintaining Persistent Job State
-
-Workers can stop or crash while jobs are being processed.
-
-Therefore, job state is persisted in PostgreSQL rather than relying only
-on worker memory.
-
-This allows the application to retain job information independently of a
-particular worker process.
-
-### Handling Concurrent Jobs
-
-A single worker would process jobs sequentially.
-
-The 3-worker pool allows multiple jobs to be processed concurrently
-while keeping concurrency bounded.
-
-```
-Redis Queue
-    |
-    ├── Worker 1
-    ├── Worker 2
-    └── Worker 3
-```
-
-### Separating Queue and Database Responsibilities
-
-Redis is used for queueing and job distribution, while PostgreSQL
-maintains the durable application state.
-
-```
-Redis
-→ Queue / Distribution
-
-PostgreSQL
-→ Persistent State / Results
-```
-
-### Handling Failed Jobs
-
-Processing failures are persisted rather than being lost with the worker
-process.
-
-```
-PROCESSING
-    |
-    v
-  FAILED
-```
-
-The failure information can then be displayed to the user and the job
-can be retried within the configured limit.
-
-### Bounded Retries
-
-Retries are bounded to prevent continuously failing jobs from being
-processed indefinitely.
-
-## Project Status
-
-### Completed
-
-The current implementation includes:
-
-- Asynchronous job submission
-- Redis-based job queue
-- 3 background workers
-- PostgreSQL-backed job lifecycle
-- Persistent job states
-- Job creation
-- Job history
-- Job status retrieval
-- Result retrieval
-- Failure tracking
-- Bounded retry support
-- Worker recovery
-- REST API
-- React dashboard
-- File upload
-- Queue monitoring
-- Health monitoring
-
-The project is currently available as a GitHub repository and is
-intended to be run locally.
-
-## Repository
-
-GitHub: https://github.com/jovialgupta/job-processing-system
-
-## Key Takeaway
-
-The project demonstrates a queue-based asynchronous processing
-architecture where each component has a clearly defined responsibility:
-
-```
-                         React Frontend
-                               |
-                               v
-                            FastAPI
-                               |
-                    ┌──────────┴──────────┐
-                    |                     |
-                    v                     v
-               PostgreSQL              Redis
-                    |                     |
-                    |              ┌──────┼──────┐
-                    |              v      v      v
-                    |           Worker Worker Worker
-                    |              1      2      3
-                    |              |      |      |
-                    |              └──────┼──────┘
-                    |                     |
-                    |                     v
-                    |              File Processing
-                    |                     |
-                    └─────────────────────┘
-```
-
-FastAPI accepts jobs, Redis queues and distributes them, three workers
-process them concurrently, and PostgreSQL maintains the persistent
-source of truth for job state, results, timestamps, and failures.
+## Known limitations
+
+- **Submit gap:** if the API crashes after saving the job to PostgreSQL but before pushing to Redis, the job stays `QUEUED` and is never picked up. A periodic sweeper for stale `QUEUED` jobs would close this.
+- **Recovery assumes a full restart:** `recover_stuck_jobs()` runs at startup and assumes no other workers are mid-job. Running workers on several machines would need per-job leases/heartbeats instead.
+- **Redis durability:** the queue lives in Redis. A Redis data loss loses queued job IDs (the job rows in PostgreSQL remain).
+- No authentication or rate limiting, and no automated test suite yet.
+- Only PDF text extraction is implemented as the job type.
+
+## Possible next steps
+
+- Sweeper for stale `QUEUED`/`PROCESSING` jobs, with lease timeouts
+- Exponential backoff between retries
+- Automated tests (pytest) for the retry and recovery paths
+- Prometheus metrics for queue depth, processing time and failure rate
+- API-key authentication
